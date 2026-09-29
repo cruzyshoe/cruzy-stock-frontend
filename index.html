@@ -1543,7 +1543,17 @@ function apiInit(){
   return true;
 }
 async function apiGet(path){const res=await fetch(apiBase()+path);if(!res.ok)throw new Error('GET '+path+' failed: '+res.status);return res.json();}
-async function apiPut(path,body){const res=await fetch(apiBase()+path,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!res.ok)throw new Error('PUT '+path+' failed: '+res.status);return res.json();}
+async function apiPut(path,body){
+  const res=await fetch(apiBase()+path,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(res.status===409){
+    let j=null;try{j=await res.json();}catch(e){}
+    const err=new Error('PUT '+path+' conflict');
+    err.conflict=(j&&j.current)||null;
+    throw err;
+  }
+  if(!res.ok)throw new Error('PUT '+path+' failed: '+res.status);
+  return res.json();
+}
 async function apiDelete(path){const res=await fetch(apiBase()+path,{method:'DELETE'});if(!res.ok)throw new Error('DELETE '+path+' failed: '+res.status);return res.json();}
 async function apiPost(path,body){const res=await fetch(apiBase()+path,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});if(!res.ok)throw new Error('POST '+path+' failed: '+res.status);return res.json();}
 
@@ -1607,60 +1617,88 @@ async function resolveScopeBid(info){
     return hit?hit.bid:null;
   }catch(e){console.error('หา bid จากชื่อสาขาไม่สำเร็จ',e);return null;}
 }
+/* รับ payload สาขา (scoped) ที่มาจาก server แล้ว apply เข้า state อย่างปลอดภัย
+   ครอบด้วย try/catch/finally เสมอ กัน applyingRemote ค้างเป็น true ตลอดไปถ้า normalizeBranchPayload/render
+   throw exception (ถ้าค้าง จะทำให้ markDirty() กลายเป็นไม่ทำอะไรเลยแบบเงียบๆ ตั้งแต่จุดนั้นไป —
+   นี่คือสาเหตุนึงที่พนักงานแตะ "มี/ไม่มี" แล้วดูเหมือนกดไม่ได้ ข้อมูลไม่ถูกบันทึกขึ้นเซิร์ฟเวอร์อีกเลย) */
+function applyScopedBranchRow(row){
+  if(!row||row.bid!==scopedBid)return;
+  branchRevs[scopedBid]=row.rev||0;
+  if(row.updatedBy===DEVICE_ID)return;
+  if(dirtyBids.has(scopedBid))return; // เรากำลังแก้ค้างอยู่ยังไม่ทันบันทึก — ห้ามให้ของฝั่งอื่นมาทับ
+  applyingRemote=true;
+  try{
+    state.branches=[normalizeBranchPayload(JSON.parse(JSON.stringify(row.payload)))];
+    state.active=0;
+    if((screen==='branch'&&!locked&&mode==='arrange')||(screen==='countbranch'&&counting))return;
+    render();
+  }catch(e){console.error('รับอัปเดตสาขา (scoped) ไม่สำเร็จ',e);}
+  finally{applyingRemote=false;}
+}
+/* รีเฟรชรายชื่อ/ข้อมูลสาขาทั้งหมดฝั่งแอดมิน ใช้ทั้งตอนได้ broadcast 'branches:changed' และตอน reconnect */
+async function refreshAdminBranches(){
+  try{
+    const rows=await apiGet('/api/branches');
+    const prevBranch=state.branches[state.active];
+    const prevSig=prevBranch?prevBranch.bid+':'+JSON.stringify(prevBranch):null;
+    applyingRemote=true;
+    const byBid={};rows.forEach(function(r){byBid[r.bid]=r;});
+    state.branches.forEach(function(b){
+      if(dirtyBids.has(b.bid))return; // สาขานี้เรากำลังแก้ค้างอยู่ — เก็บของเราไว้ก่อน
+      const row=byBid[b.bid];
+      if(row){branchRevs[b.bid]=row.rev||0;Object.assign(b,normalizeBranchPayload(JSON.parse(JSON.stringify(row.payload))));}
+    });
+    rows.forEach(function(row){ // สาขาใหม่จากเครื่องอื่นที่ยังไม่เคยโหลด
+      if(state.branches.find(function(b){return b.bid===row.bid;}))return;
+      branchRevs[row.bid]=row.rev||0;
+      state.branches.push(normalizeBranchPayload(JSON.parse(JSON.stringify(row.payload))));
+    });
+    state.branches=state.branches.filter(function(b){return dirtyBids.has(b.bid)||byBid[b.bid];}); // สาขาที่ถูกลบจากเครื่องอื่น
+    if(!state.branches.length)state.branches=[newBranch('สาขา 1',3)];
+    state.active=Math.max(0,Math.min(state.active,state.branches.length-1));
+    const nb2=state.branches[state.active];
+    const newSig=nb2?nb2.bid+':'+JSON.stringify(nb2):null;
+    const activeUnchanged=(prevSig===newSig);
+    if((screen==='branch'&&!locked&&mode==='arrange'&&activeUnchanged)||(screen==='countbranch'&&counting&&activeUnchanged))return;
+    render();
+  }catch(e){console.error('รับอัปเดตรายชื่อสาขาไม่สำเร็จ',e);}
+  finally{applyingRemote=false;}
+}
+/* รีเฟรชข้อมูลสาขาเดียว (scoped) ตอน reconnect — ใช้ตรรกะป้องกันเดียวกับ applyScopedBranchRow */
+async function refreshScopedBranch(){
+  if(dirtyBids.has(scopedBid))return; // กำลังแก้ค้างอยู่ — อย่าเพิ่งไปทับ รอ autoPush ส่งของเราขึ้นก่อน
+  try{
+    const row=await apiGet('/api/branches/'+encodeURIComponent(scopedBid));
+    applyScopedBranchRow({...row,updatedBy:null});
+  }catch(e){console.error('รีเฟรชข้อมูลสาขาหลัง reconnect ไม่สำเร็จ',e);}
+}
+let hasConnectedOnce=false;
 function startRealtime(){
   if(!apiInit())return;
   if(scoped&&scopedBid){
     if(socket.connected)socket.emit('join',{bid:scopedBid});
-    socket.on('branch:update',function(row){
-      if(!row||row.bid!==scopedBid)return;
-      branchRevs[scopedBid]=row.rev||0;
-      if(row.updatedBy===DEVICE_ID)return;
-      if(dirtyBids.has(scopedBid))return; // เรากำลังแก้ค้างอยู่ยังไม่ทันบันทึก — ห้ามให้ของฝั่งอื่นมาทับ
-      applyingRemote=true;
-      state.branches=[normalizeBranchPayload(JSON.parse(JSON.stringify(row.payload)))];
-      state.active=0;
-      if((screen==='branch'&&!locked&&mode==='arrange')||(screen==='countbranch'&&counting)){applyingRemote=false;return;}
-      render();
-      applyingRemote=false;
-    });
+    socket.on('branch:update',applyScopedBranchRow);
   }else if(!scoped){
     if(socket.connected)socket.emit('join',{admin:true});
-    socket.on('branches:changed',async function(){
-      try{
-        const rows=await apiGet('/api/branches');
-        const prevBranch=state.branches[state.active];
-        const prevSig=prevBranch?prevBranch.bid+':'+JSON.stringify(prevBranch):null;
-        applyingRemote=true;
-        const byBid={};rows.forEach(function(r){byBid[r.bid]=r;});
-        state.branches.forEach(function(b){
-          if(dirtyBids.has(b.bid))return; // สาขานี้เรากำลังแก้ค้างอยู่ — เก็บของเราไว้ก่อน
-          const row=byBid[b.bid];
-          if(row){branchRevs[b.bid]=row.rev||0;Object.assign(b,normalizeBranchPayload(JSON.parse(JSON.stringify(row.payload))));}
-        });
-        rows.forEach(function(row){ // สาขาใหม่จากเครื่องอื่นที่ยังไม่เคยโหลด
-          if(state.branches.find(function(b){return b.bid===row.bid;}))return;
-          branchRevs[row.bid]=row.rev||0;
-          state.branches.push(normalizeBranchPayload(JSON.parse(JSON.stringify(row.payload))));
-        });
-        state.branches=state.branches.filter(function(b){return dirtyBids.has(b.bid)||byBid[b.bid];}); // สาขาที่ถูกลบจากเครื่องอื่น
-        if(!state.branches.length)state.branches=[newBranch('สาขา 1',3)];
-        state.active=Math.max(0,Math.min(state.active,state.branches.length-1));
-        const nb2=state.branches[state.active];
-        const newSig=nb2?nb2.bid+':'+JSON.stringify(nb2):null;
-        const activeUnchanged=(prevSig===newSig);
-        if((screen==='branch'&&!locked&&mode==='arrange'&&activeUnchanged)||(screen==='countbranch'&&counting&&activeUnchanged)){applyingRemote=false;return;}
-        render();
-        applyingRemote=false;
-      }catch(e){console.error('รับอัปเดตรายชื่อสาขาไม่สำเร็จ',e);applyingRemote=false;}
-    });
+    socket.on('branches:changed',refreshAdminBranches);
   }
   socket.on('meta:update',function(mp){
     if(!mp)return;
-    metaRev=mp.rev||0;
     applyingRemote=true;
-    if(!hasUnsavedChanges)loadMeta(mp);
-    render();
-    applyingRemote=false;
+    try{
+      metaRev=mp.rev||0;
+      if(!hasUnsavedChanges)loadMeta(mp);
+      render();
+    }catch(e){console.error('รับอัปเดตข้อมูลกลางไม่สำเร็จ',e);}
+    finally{applyingRemote=false;}
+  });
+  // ต่อ socket ใหม่ได้ (มือถือหลุดเน็ตชั่วครู่ ฯลฯ) การ join ห้องใหม่ไม่พอ เพราะ broadcast ที่เกิดขึ้น
+  // ระหว่างหลุดการเชื่อมต่อจะหายไปเลย (ไม่มีการ replay) — ต้อง refetch ข้อมูลสดจากเซิร์ฟเวอร์ทุกครั้งที่ reconnect
+  // เพื่อไม่ให้เครื่องนี้ค้างอยู่กับสำเนาเก่าจนไปเขียนทับของใหม่กว่าตอน push ครั้งถัดไป
+  socket.on('connect',function(){
+    if(!hasConnectedOnce){hasConnectedOnce=true;return;}
+    if(scoped&&scopedBid)refreshScopedBranch();
+    else if(!scoped)refreshAdminBranches();
   });
   clearInterval(safetyNetTimer);
   safetyNetTimer=setInterval(function(){if(hasUnsavedChanges||dirtyBids.size)autoPush(0);},45000);
@@ -1698,10 +1736,41 @@ async function pushBranch(bid){
   const local=state.branches.find(function(b){return b.bid===bid;});
   if(!local)return true; // ถูกลบไปแล้วในเครื่องนี้ — ไม่ต้อง push (การลบจริงทำผ่าน removeBranchRemote แยกต่างหาก)
   try{
-    const row=await apiPut('/api/branches/'+encodeURIComponent(bid),{name:local.name,payload:local,updatedBy:DEVICE_ID});
+    const row=await apiPut('/api/branches/'+encodeURIComponent(bid),{name:local.name,payload:local,updatedBy:DEVICE_ID,expectedRev:(branchRevs[bid]!=null?branchRevs[bid]:null)});
     branchRevs[bid]=row.rev;
     return true;
-  }catch(e){console.error('pushBranch failed',bid,e);return false;}
+  }catch(e){
+    if(e.conflict){
+      // มีเครื่องอื่นบันทึกสาขานี้ไปก่อนเราระหว่างที่เราถือสำเนาเก่ากว่าอยู่ — ห้ามทับของเขาแบบดุ่มๆ
+      // เอาของใหม่จากเซิร์ฟเวอร์มาเป็นฐาน แล้วคง "รอบนับ" ของเราไว้ (กันรอบนับหาย) ก่อน retry อีกครั้งเดียว
+      try{
+        const fresh=e.conflict.payload;
+        const myRounds=local.rounds;
+        Object.assign(local,normalizeBranchPayload(JSON.parse(JSON.stringify(fresh))));
+        local.rounds=myRounds;
+        branchRevs[bid]=e.conflict.rev;
+        const row2=await apiPut('/api/branches/'+encodeURIComponent(bid),{name:local.name,payload:local,updatedBy:DEVICE_ID,expectedRev:branchRevs[bid]});
+        branchRevs[bid]=row2.rev;
+        return true;
+      }catch(e2){console.error('pushBranch retry after conflict failed',bid,e2);return false;}
+    }
+    console.error('pushBranch failed',bid,e);return false;
+  }
+}
+/* บันทึกรอบนับผ่าน endpoint เฉพาะที่ backend merge เฉพาะ path rounds[date][round] เท่านั้น
+   (ไม่ผ่านการเขียนทับ payload ทั้งก้อนแบบ pushBranch) — กันไม่ให้การยืนยันรอบนับชนกับการแก้ผัง/แคตตาล็อก
+   ที่ฝั่งแอดมินอาจกำลังทำอยู่พร้อมกันบนสาขาเดียวกัน และกันไม่ให้การยืนยันรอบนับหายไปเงียบๆ */
+async function pushRoundConfirm(bid,date,round,session,attempt){
+  try{
+    const row=await apiPut('/api/branches/'+encodeURIComponent(bid)+'/round',{date:date,round:round,session:session,updatedBy:DEVICE_ID});
+    branchRevs[bid]=row.rev;
+    return true;
+  }catch(e){
+    console.error('pushRoundConfirm failed',bid,e);
+    const a=attempt||0;
+    if(a<6){setTimeout(function(){pushRoundConfirm(bid,date,round,session,a+1);},Math.min(2000*(a+1),8000));}
+    return false;
+  }
 }
 let saveInFlight=false;
 async function autoPush(attempt){
@@ -1976,9 +2045,13 @@ function saveRound(){var b=B();var sess=curRoundSess(true);var done=Object.keys(
     if(sess.confirmed&&pcEdit){sess.editedAt=new Date().toISOString();sess.editedBy=logWho();sess.edited=true;addLog('แก้ไขรอบนับ (หลังบ้าน)',b.name+' · '+thaiDate(countDate)+' · '+(countRound==='morning'?'เช้า':'เย็น'));pcEdit=false;}
     else{sess.confirmed=true;sess.t=new Date().toISOString();sess.who=logWho();sess.v1={slots:JSON.parse(JSON.stringify(sess.slots)),who:sess.who,t:sess.t};addLog('ยืนยันรอบนับ',b.name+' · '+thaiDate(countDate)+' · '+(countRound==='morning'?'เช้า':'เย็น')+' · '+done+' คู่');}
     counting=false;
+    markDirty(); // ให้ log ที่เพิ่ง addLog ไปถูกส่งขึ้นด้วย (เผื่อ dirtyBids/hasUnsavedChanges ยังว่างอยู่พอดี)
     render();
-    autoPush(0); // การยืนยันรอบนับเป็นการ submit ครั้งเดียวจบ (พนักงานไม่เห็นปุ่มบันทึกในโหมดนี้) — ส่งขึ้นคลาวด์ทันที ไม่รอ
-    
+    // ส่งรอบนับผ่าน endpoint เฉพาะทันที ไม่พึ่ง autoPush/dirtyBids เพียงอย่างเดียว — รับประกันว่าการยืนยันรอบนับ
+    // จะไปถึงเซิร์ฟเวอร์แน่นอนและจะไม่ถูกการแก้ผัง/แคตตาล็อกฝั่งอื่นทับทิ้งภายหลัง
+    pushRoundConfirm(b.bid,countDate,countRound,JSON.parse(JSON.stringify(sess)),0);
+    autoPush(0); // ส่วนอื่น (log ฯลฯ) ยังส่งตามทางเดิมด้วย
+
     setTimeout(function(){askInfo('บันทึกรอบนับเรียบร้อย ✅<br>'+esc(b.name)+' · '+thaiDate(countDate)+' · '+(countRound==='morning'?'รอบเช้า':'รอบเย็น')+'<div style="margin-top:8px;">'+countedListHTML(sess)+'</div>','✅ เซฟรอบนับ · รายการของที่มี');},250);
   };
   var msg='ยืนยันรอบนับนี้?\n'+b.name+' · '+thaiDate(countDate)+' · '+(countRound==='morning'?'รอบเช้า':'รอบเย็น')+'\nเลือกแล้ว '+done+'/'+tot+' คู่';

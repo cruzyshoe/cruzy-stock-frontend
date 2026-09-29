@@ -527,7 +527,13 @@
 </div>
 
 <script id="saved-state" type="application/json">null</script>
-<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<!-- โหลด socket.io client จาก backend เดียวกันเอง (Socket.IO server เสิร์ฟไฟล์นี้ให้อัตโนมัติที่ /socket.io/socket.io.js)
+     แทนที่จะโหลดจาก cdn.socket.io ซึ่งเป็นโดเมนภายนอกที่ไม่เกี่ยวกับแอปเลย — บนเน็ตมือถือหน้าร้าน/4G ที่ไม่เสถียร
+     การเชื่อมต่อไป cdn ภายนอกอาจช้า/ติดขัดกว่าการเชื่อมต่อไป backend ของเราเองมาก (ซึ่งแอปก็ต้องคุยด้วยอยู่แล้วสำหรับ API)
+     เพราะ <script src> ตัวนี้เป็น blocking script (บล็อกการรันสคริปต์หลักด้านล่างจนกว่าจะโหลดเสร็จ) ถ้าช้าเป็นนาที
+     หน้าเว็บจะโหลดโครงหน้าติ๊กๆ ได้ แต่ปุ่ม/กล่องทั้งหมดจะยังไม่ทำงานเลยจนกว่าไฟล์นี้จะโหลดเสร็จ — ตรงกับอาการ
+     "เปิดเว็บมือถือแล้วกดอะไรไม่ได้ ต้องรอ 1-2 นาทีถึงกดได้" ที่พนักงานหน้าสาขาเจอ -->
+<script src="https://cruzy-stock-backend-production.up.railway.app/socket.io/socket.io.js"></script>
 <script>
 const COLORS=[{k:'white',th:'ขาว'},{k:'gray',th:'เทา'},{k:'navy',th:'กรม'},{k:'cream',th:'ครีม'},{k:'brown',th:'น้ำตาล'},{k:'choco',th:'น้ำตาลเข้ม'},{k:'blue',th:'ฟ้า'},{k:'pink',th:'ชมพู'}];
 const cth=k=>(COLORS.find(c=>c.k===k)||{}).th||k;

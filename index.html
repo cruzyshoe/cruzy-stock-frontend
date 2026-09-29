@@ -1626,11 +1626,16 @@ function applyScopedBranchRow(row){
   branchRevs[scopedBid]=row.rev||0;
   if(row.updatedBy===DEVICE_ID)return;
   if(dirtyBids.has(scopedBid))return; // เรากำลังแก้ค้างอยู่ยังไม่ทันบันทึก — ห้ามให้ของฝั่งอื่นมาทับ
+  // กำลังนับสต๊อก หรือกำลังจัดผังอยู่ตรงนี้ — ห้าม "สลับ" state.branches ทั้งก้อนตอนนี้เด็ดขาด แม้จะไม่ render ก็ตาม
+  // เพราะปุ่ม/กล่องที่แสดงอยู่บนจอตอนนี้ผูก index (ชั้น-บาร์-ตะขอ-กล่อง) ไว้กับโครงสร้าง arrange ชุดเดิม
+  // ถ้าเงียบๆ สลับไปเป็นชุดใหม่ (เช่น จากอีกเครื่องที่แก้ผังพร้อมกัน) โดยโครงสร้างไม่ตรงกันอีกต่อไป
+  // ทุกจุดที่แตะจะหา index ไม่เจอ (tmplPairOf คืน null เงียบๆ) กลายเป็น "กดอะไรก็ไม่ได้เลย" ทั้งจอ
+  // จนกว่าจะออกจากหน้านี้/รีโหลด — ปล่อยให้รอบถัดไปที่ไม่ได้กำลังนับ/จัดผังอยู่ค่อยรับของใหม่แทน
+  if((screen==='branch'&&!locked&&mode==='arrange')||(screen==='countbranch'&&counting))return;
   applyingRemote=true;
   try{
     state.branches=[normalizeBranchPayload(JSON.parse(JSON.stringify(row.payload)))];
     state.active=0;
-    if((screen==='branch'&&!locked&&mode==='arrange')||(screen==='countbranch'&&counting))return;
     render();
   }catch(e){console.error('รับอัปเดตสาขา (scoped) ไม่สำเร็จ',e);}
   finally{applyingRemote=false;}

@@ -1737,16 +1737,42 @@ function setSaveStatus(s){
   else if(s==='error'){el.textContent='⚠ บันทึกไม่สำเร็จ กำลังลองใหม่…';el.style.color='#b91c1c';if(btn){btn.className='mini danger pulse';btn.textContent='⚠ ลองใหม่';}}
 }
 function fmtTime(iso){try{return new Date(iso).toLocaleString('th-TH',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});}catch(e){return iso||'';}}
-async function pushMeta(){
+function mergeMetaArrayLocalWins(local,fresh,keyFn){
+  // รวมรายการจากฝั่งเซิร์ฟเวอร์ (fresh) เข้ากับของในเครื่อง (local) โดยยึดของในเครื่องเป็นหลักถ้าซ้ำ key กัน
+  // และไม่ทิ้งของฝั่งเซิร์ฟเวอร์ที่ไม่ได้อยู่ในเครื่องเรา — กันไม่ให้การ merge หลัง conflict ไปทำของฝั่งอื่นหาย
+  const localKeys=new Set((local||[]).map(keyFn));
+  const merged=(local||[]).slice();
+  (fresh||[]).forEach(function(item){if(!localKeys.has(keyFn(item)))merged.push(item);});
+  return merged;
+}
+function mergeMetaDictLocalWins(local,fresh){
+  return Object.assign({},fresh||{},local||{});
+}
+async function pushMeta(attempt){
   try{
     const newLogs=state.log.filter(function(l){return l.__pending;});
-    const body={products:state.products,custColors:state.custColors,skuCodes:state.skuCodes,skuNames:state.skuNames,siteUrl:state.siteUrl,trashRetentionDays:state.trashRetentionDays,newLogs:newLogs,updatedBy:DEVICE_ID};
+    const body={products:state.products,custColors:state.custColors,skuCodes:state.skuCodes,skuNames:state.skuNames,siteUrl:state.siteUrl,trashRetentionDays:state.trashRetentionDays,newLogs:newLogs,updatedBy:DEVICE_ID,expectedRev:(metaRev||null)};
     const mp=await apiPut('/api/meta',body);
     metaRev=mp.rev;
     state.log.forEach(function(l){delete l.__pending;});
     loadMeta(mp);
     return true;
-  }catch(e){console.error('pushMeta failed',e);return false;}
+  }catch(e){
+    if(e.conflict&&(attempt||0)<1){
+      // มีเครื่องอื่นบันทึกข้อมูลกลางไปก่อนเราระหว่างที่เราถือสำเนาเก่ากว่าอยู่ — ห้ามทับของเขาแบบดุ่มๆ
+      // รวมรายการเข้าด้วยกันแทน (ของในเครื่องเราไว้ก่อนถ้าซ้ำ key แต่ไม่ทิ้งของฝั่งเขาที่เราไม่มี) แล้วลองใหม่
+      try{
+        const fresh=e.conflict;
+        state.products=mergeMetaArrayLocalWins(state.products,fresh.products,function(p){return p&&p.name;});
+        state.custColors=mergeMetaArrayLocalWins(state.custColors,toArrC(fresh.cust_colors),function(c){return c&&c.k;});
+        state.skuCodes=mergeMetaDictLocalWins(fresh.sku_codes,state.skuCodes);
+        state.skuNames=mergeMetaDictLocalWins(fresh.sku_names,state.skuNames);
+        metaRev=fresh.rev;
+        return await pushMeta((attempt||0)+1);
+      }catch(e2){console.error('pushMeta retry after conflict failed',e2);return false;}
+    }
+    console.error('pushMeta failed',e);return false;
+  }
 }
 async function pushBranch(bid){
   const local=state.branches.find(function(b){return b.bid===bid;});

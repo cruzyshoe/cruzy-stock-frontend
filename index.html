@@ -2644,8 +2644,39 @@ function startRealtimeWithRetry(attempt){
   if(a>=40)return;
   setTimeout(function(){startRealtimeWithRetry(a+1);},a<10?500:1500);
 }
+/* เช็คทุก 3 นาทีว่าเซิร์ฟเวอร์เพิ่ง deploy โค้ดใหม่ไปหรือยัง (เทียบกับตอนเปิดหน้านี้ครั้งแรก) — ถ้าใช่ แปะแถบเตือน
+   ให้กดรีเฟรชทันที กันเหตุการณ์แบบที่ผ่านมา (เครื่องที่เปิดแอปค้างไว้นานๆ ใช้โค้ดเก่าโดยไม่รู้ตัว ยังคงส่ง payload
+   แบบเก่าทับข้อมูลใหม่กว่าได้ แม้ฝั่งเซิร์ฟเวอร์จะมีตาข่ายนิรภัยกันไว้แล้วก็ตาม — รีเฟรชให้ตรงเวอร์ชันไว้ก่อนดีที่สุด) */
+let bootAppVersion=null;
+let versionBannerShown=false;
+function showNewVersionBanner(){
+  if(versionBannerShown)return;
+  versionBannerShown=true;
+  const bar=document.createElement('div');
+  bar.style.cssText='position:fixed;left:0;right:0;top:0;z-index:99999;background:#b45309;color:#fff;padding:10px 14px;font-size:14px;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;box-shadow:0 2px 6px rgba(0,0,0,.2)';
+  bar.innerHTML='<span>⚠ ระบบมีการอัปเดตใหม่ — กรุณารีเฟรชหน้านี้เพื่อความปลอดภัยของข้อมูล</span>';
+  const btn=document.createElement('button');
+  btn.textContent='รีเฟรชเลย';
+  btn.style.cssText='background:#fff;color:#b45309;border:none;border-radius:6px;padding:6px 14px;font-weight:bold;cursor:pointer';
+  btn.onclick=function(){location.reload();};
+  bar.appendChild(btn);
+  document.body.appendChild(bar);
+  document.body.style.paddingTop=(document.body.style.paddingTop?parseInt(document.body.style.paddingTop):0)+44+'px';
+}
+async function checkVersionLoop(){
+  try{
+    const r=await apiGet('/api/version');
+    const v=r&&r.version;
+    if(v){
+      if(!bootAppVersion)bootAppVersion=v;
+      else if(v!==bootAppVersion)showNewVersionBanner();
+    }
+  }catch(e){ /* เน็ตหลุดชั่วคราว ไม่ต้องทำอะไร ลองรอบถัดไป */ }
+  setTimeout(checkVersionLoop,180000);
+}
 applyView();
 bootSync();
+checkVersionLoop();
 </script>
 </body>
 </html>

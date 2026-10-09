@@ -1540,6 +1540,7 @@ function delBranch(){
    ถังขยะ: ลบสาขา → ย้ายเข้า branches_trash (ไม่ลบจริง) → ฝั่ง backend มีงานลบถาวรอัตโนมัติเมื่อครบกำหนดเวลา */
 let socket=null, applyingRemote=false, safetyNetTimer=null;
 let metaRev=0;
+let branchLoadFailed=false; // true ถ้าโหลดผังสาขาจากเซิร์ฟเวอร์ไม่สำเร็จแล้ว fallback เป็นสาขาเปล่า — ห้าม push ทับของจริงบนเซิร์ฟเวอร์เด็ดขาด
 function apiBase(){return (state.sync.url||'').replace(/\/$/,'');}
 function apiInit(){
   if(!state.sync.url)return false;
@@ -1602,14 +1603,23 @@ function removeBranchRemote(bid){
   apiDelete('/api/branches/'+encodeURIComponent(bid)+'?by='+encodeURIComponent(DEVICE_ID)).catch(function(e){console.error('ลบสาขาไม่สำเร็จ',bid,e);});
 }
 async function loadSingleBranch(bid,fallbackName){
-  try{
-    const row=await Promise.race([apiGet('/api/branches/'+encodeURIComponent(bid)),timeoutPromise(6000)]);
-    branchRevs[bid]=row.rev||0;
-    state.branches=[normalizeBranchPayload(row.payload)];
-  }catch(e){
-    console.error('โหลดข้อมูลสาขานี้ไม่สำเร็จ/หมดเวลา',e);
-    const nb=newBranch(fallbackName||'สาขา',3);nb.bid=bid;state.branches=[nb];
+  branchLoadFailed=false;
+  // ลองใหม่สูงสุด 3 ครั้งก่อนยอม fallback เป็นสาขาเปล่า — เพราะถ้าเน็ตมือถือหลุดแวบเดียวแล้วรีบ fallback
+  // ทันที ผู้ใช้จะเห็นผังสินค้าที่เคยตั้งไว้กลายเป็นว่างเปล่าทั้งหมด (ดูเหมือนข้อมูลหาย ทั้งที่จริงแค่โหลดไม่ทัน)
+  for(let attempt=0;attempt<3;attempt++){
+    try{
+      const row=await Promise.race([apiGet('/api/branches/'+encodeURIComponent(bid)),timeoutPromise(6000)]);
+      branchRevs[bid]=row.rev||0;
+      state.branches=[normalizeBranchPayload(row.payload)];
+      state.active=0;
+      return;
+    }catch(e){
+      console.error('โหลดข้อมูลสาขานี้ไม่สำเร็จ/หมดเวลา (ครั้งที่ '+(attempt+1)+'/3)',e);
+      if(attempt<2)await new Promise(function(r){setTimeout(r,1500);});
+    }
   }
+  branchLoadFailed=true;
+  const nb=newBranch(fallbackName||'สาขา',3);nb.bid=bid;state.branches=[nb];
   state.active=0;
 }
 async function loadAllBranches(){
@@ -1776,7 +1786,13 @@ async function pushMeta(attempt){
 }
 async function pushBranch(bid){
   const local=state.branches.find(function(b){return b.bid===bid;});
-  if(!local)return true; // ถูกลบไปแล้วในเครื่องนี้ — ไม่ต้อง push (การลบจริงทำผ่าน removeBranchRemote แยกต่างหาก)
+  if(!local)return true;
+  if(branchLoadFailed&&bid===scopedBid){
+    // ยังไม่เคยโหลดผังของจริงจากเซิร์ฟเวอร์สำเร็จเลยตั้งแต่เปิดหน้านี้ (ใช้สาขาเปล่า fallback อยู่)
+    // ห้าม push เด็ดขาด เพราะจะไปมีความเสี่ยงเขียนทับผังสินค้าจริงที่เซิร์ฟเวอร์ (แม้ฝั่งเซิร์ฟเวอร์จะกันไว้อีกชั้นแล้วก็ตาม)
+    console.error('ข้ามการบันทึกสาขา '+bid+' — ยังโหลดผังจากเซิร์ฟเวอร์ไม่สำเร็จ (ใช้สาขาเปล่า fallback อยู่)');
+    return false;
+  } // ถูกลบไปแล้วในเครื่องนี้ — ไม่ต้อง push (การลบจริงทำผ่าน removeBranchRemote แยกต่างหาก)
   try{
     const row=await apiPut('/api/branches/'+encodeURIComponent(bid),{name:local.name,payload:local,updatedBy:DEVICE_ID,expectedRev:(branchRevs[bid]!=null?branchRevs[bid]:null)});
     branchRevs[bid]=row.rev;
@@ -2613,8 +2629,11 @@ async function bootSync(){
   }
   render();
   applyingRemote=false;
+  if(branchLoadFailed){
+    alert('⚠ โหลดผังสินค้าของสาขานี้จากเซิร์ฟเวอร์ไม่สำเร็จ (เน็ตช้า/หลุด)\nหน้าที่เห็นตอนนี้เป็นผังเปล่าชั่วคราว ไม่ใช่ข้อมูลจริง — ผังสินค้าที่เคยตั้งไว้ยังอยู่ปลอดภัยบนเซิร์ฟเวอร์\n\nกรุณาปิดแล้วเปิดหน้านี้ใหม่ หรือกดรีเฟรชเมื่อสัญญาณดีขึ้น ก่อนเริ่มนับ/แก้ไขใดๆ');
+  }
   startRealtimeWithRetry();
-  if(hasUnsavedChanges||dirtyBids.size)autoPush(0); // เช่น เพิ่งสร้างสาขานี้ใหม่ตอน fetch ไม่เจอ ต้อง seed ขึ้นเซิร์ฟเวอร์
+  if(!branchLoadFailed&&(hasUnsavedChanges||dirtyBids.size))autoPush(0); // เช่น เพิ่งสร้างสาขานี้ใหม่ตอน fetch ไม่เจอ ต้อง seed ขึ้นเซิร์ฟเวอร์
 }
 /* ลองเปิด realtime (socket.io) ซ้ำเป็นระยะจนกว่าจะสำเร็จ — เผื่อ socket.io client (โหลดแบบ async) ยังโหลดไม่เสร็จ
    ตอนหน้าเว็บเพิ่งเปิด ไม่ปล่อยให้ทั้งแอปรอมันเฉยๆ แบบเดิม (หน้าเว็บใช้งาน/กดนับได้ตามปกติระหว่างนี้อยู่แล้ว

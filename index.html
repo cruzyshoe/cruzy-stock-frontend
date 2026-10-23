@@ -550,6 +550,48 @@ const DEFAULT_PRODUCTS=[
   {name:'Cosy01',colors:['pink','blue','cream','choco'],sizes:KIDS.concat(CPAIR)},
   {name:'Cosy02',colors:['pink','blue','cream','choco'],sizes:CPAIR.slice()}
 ];
+// รุ่นสินค้าหลักที่ร้านใช้งานจริง — ฝังไว้ในโค้ดเป็นค่าประกัน (baseline) เพื่อกันเหตุการณ์ "รุ่นสินค้าหาย"
+// แบบที่เคยเกิดกับ Rio/Flip On/Belly ซ้ำอีก ไม่ว่าฐานข้อมูลจะเกิดปัญหาอะไรก็ตาม ทุกครั้งที่โหลดข้อมูลกลาง
+// (เปิดแอป หรือมีการอัปเดตสด) ระบบจะเช็คว่ารุ่นพวกนี้ยังอยู่ไหม ถ้าหายไปจะเติมกลับให้อัตโนมัติ (ดู
+// ensureBaselineProducts) — ใช้ชื่อสีเป็นภาษาไทยเพราะสีบางสี (เขียว/เหลือง) เป็นสีที่ร้านเพิ่มเองนอกเหนือจาก
+// COLORS หลัก และ key ของสีพวกนี้ไม่แน่นอน (ขึ้นกับลำดับที่เคยเพิ่ม) จึงต้องค้นหา/สร้างใหม่จาก "ชื่อไทย" แทน
+const BASELINE_PRODUCTS=[
+  {name:'Jeff',colorNames:['ขาว','เทา','กรม'],sizes:KIDS.concat(ADULT)},
+  {name:'Deco',colorNames:['ครีม','น้ำตาล','เทา'],sizes:KIDS.concat(ADULT)},
+  {name:'Cosy01',colorNames:['ฟ้า','ชมพู','เขียว','เหลือง','ครีม','น้ำตาล','น้ำตาลเข้ม'],sizes:KIDS.concat(CPAIR)},
+  {name:'Cosy02',colorNames:['ฟ้า','ชมพู','เขียว','เหลือง','ครีม','น้ำตาล','น้ำตาลเข้ม'],sizes:CPAIR.slice()},
+  {name:'Flip On',colorNames:['ครีม'],sizes:CPAIR.slice()},
+  {name:'Rio',colorNames:['ครีม','น้ำตาล','เทา'],sizes:CPAIR.slice()},
+  {name:'Belly',colorNames:['ครีม','น้ำตาล'],sizes:CPAIR.slice()}
+];
+const BASELINE_COLOR_HEX={'เขียว':'#4caf50','เหลือง':'#ffc107'};
+// หา key ของสีจากชื่อไทย — เช็ค COLORS หลักก่อน แล้วค่อยเช็คสีที่เคยเพิ่มเอง (custColors) ถ้ายังไม่เจอเลยค่อย
+// สร้างสีใหม่ให้ (ใช้ตรรกะเดียวกับ addCustomColor) เพื่อให้ยังใช้งานได้แม้สีเดิมจะหายไปจากฐานข้อมูลด้วยก็ตาม
+function resolveColorKeyByThaiName(th,defaultHex){
+  const base=COLORS.find(function(c){return c.th===th;});
+  if(base)return base.k;
+  const cust=state.custColors.find(function(c){return c.th===th;});
+  if(cust)return cust.k;
+  let k='cust'+(state.custColors.length+1);
+  while(COLORS.find(function(c){return c.k===k;}))k+='x';
+  registerColor(k,th,defaultHex||'#999999');
+  state.custColors.push({k:k,th:th,fill:defaultHex||'#999999'});
+  return k;
+}
+// เรียกทุกครั้งหลังโหลด meta จากเซิร์ฟเวอร์ (ทั้งตอนเปิดแอปและตอนมีอัปเดตสดเข้ามา) — ถ้ารุ่นสินค้าหลักรุ่นไหน
+// หายไปจากรายการที่โหลดมา จะเติมกลับเข้า state.products ให้ทันที และตั้งค่าให้บันทึกกลับขึ้นเซิร์ฟเวอร์
+function ensureBaselineProducts(){
+  let changed=false;
+  BASELINE_PRODUCTS.forEach(function(bp){
+    if(state.products.find(function(p){return p&&p.name===bp.name;}))return;
+    const colors=bp.colorNames.map(function(th){return resolveColorKeyByThaiName(th,BASELINE_COLOR_HEX[th]);});
+    state.products.push({name:bp.name,colors:colors,sizes:bp.sizes.slice()});
+    changed=true;
+  });
+  if(changed&&typeof render==='function')render();
+  if(changed)markDirty();
+  return changed;
+}
 // ---- แผนที่ชื่อไทยในไฟล์อัพโหลด → รุ่น/สี (ตามฟอร์แมต "จัดรายการพิษณุโลก ลานโปร") ----
 const UPLOAD_NAME_MAP={
  'เจฟขาว':['Jeff','white'],'เจฟเทา':['Jeff','gray'],'เจฟกรม':['Jeff','navy'],
@@ -1578,6 +1620,7 @@ function loadMeta(mp){
   state.skuNames=mp.sku_names||{};
   if(mp.site_url!=null)state.siteUrl=mp.site_url;
   state.trashRetentionDays=(mp.trash_retention_days!=null)?mp.trash_retention_days:7;
+  ensureBaselineProducts();
 }
 function normalizeBranchPayload(b){
   if(!b.bid)b.bid=stableBidFromName(b.name);

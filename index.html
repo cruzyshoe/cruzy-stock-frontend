@@ -1758,6 +1758,13 @@ function mergeMetaArrayLocalWins(local,fresh,keyFn){
 function mergeMetaDictLocalWins(local,fresh){
   return Object.assign({},fresh||{},local||{});
 }
+// ลบรุ่นสินค้าแบบเจาะจงที่เซิร์ฟเวอร์โดยตรง (ไม่ผ่านการ push รายการทั้งก้อน) เพื่อไม่ให้ชนกับตาข่ายนิรภัยฝั่ง
+// เซิร์ฟเวอร์ที่คอยกันไม่ให้รุ่นสินค้าหายไปเงียบๆ จากการ push รายการที่ถืออยู่ไม่ครบ — การลบต้องสั่งตรงๆ แบบนี้เท่านั้น
+function deleteProductRemote(name){
+  apiDelete('/api/meta/product/'+encodeURIComponent(name)).then(function(mp){
+    if(mp&&mp.rev!=null)metaRev=mp.rev;
+  }).catch(function(e){console.error('ลบรุ่นสินค้าไม่สำเร็จ',name,e);});
+}
 async function pushMeta(attempt){
   try{
     const newLogs=state.log.filter(function(l){return l.__pending;});
@@ -1879,7 +1886,7 @@ function askInfo(html,title){document.getElementById('cfTitle').textContent=titl
 function askConfirmHTML(html,title,onYes,okLabel){const p=document.getElementById('confirmPanel');document.getElementById('cfTitle').textContent=title||'⚠ ยืนยัน';document.getElementById('cfMsg').innerHTML=html;document.getElementById('cfCancelBtn').style.display='';const ok=document.getElementById('cfOk');ok.textContent=okLabel||'บันทึก';ok.className='primary';cfCb=onYes;p.classList.add('open');}
 function cfCancel(){cfCb=null;document.getElementById('confirmPanel').classList.remove('open');}
 function cfOk(){const cb=cfCb;cfCb=null;document.getElementById('confirmPanel').classList.remove('open');if(cb)cb();}
-function buildProdList(){const el=document.getElementById('prodList');el.innerHTML='';state.products.forEach((p,i)=>{const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:8px;padding:7px 3px;border-bottom:1px solid #e5e7eb;flex-wrap:wrap;';row.innerHTML='<b style="min-width:64px;">'+p.name+'</b><span>'+p.colors.map(c=>'<span class="cchip" style="background:'+FILL[c]+'"></span>').join('')+'</span><span style="flex:1;font-size:11px;color:#6b7280;">'+p.sizes.join(', ')+'</span>';const cbtn=document.createElement('button');cbtn.className='mini';cbtn.textContent='🏷 รหัส';cbtn.onclick=()=>openSkuCodes(i);const e=document.createElement('button');e.className='mini';e.textContent='✏';e.onclick=()=>editProd(i);const d=document.createElement('button');d.className='mini danger';d.textContent='🗑';d.onclick=()=>{askConfirm('ลบรุ่น '+p.name+'?',()=>{state.products.splice(i,1);buildProdList();markDirty();},'ยืนยันลบ');};row.appendChild(cbtn);row.appendChild(e);row.appendChild(d);el.appendChild(row);});}
+function buildProdList(){const el=document.getElementById('prodList');el.innerHTML='';state.products.forEach((p,i)=>{const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:8px;padding:7px 3px;border-bottom:1px solid #e5e7eb;flex-wrap:wrap;';row.innerHTML='<b style="min-width:64px;">'+p.name+'</b><span>'+p.colors.map(c=>'<span class="cchip" style="background:'+FILL[c]+'"></span>').join('')+'</span><span style="flex:1;font-size:11px;color:#6b7280;">'+p.sizes.join(', ')+'</span>';const cbtn=document.createElement('button');cbtn.className='mini';cbtn.textContent='🏷 รหัส';cbtn.onclick=()=>openSkuCodes(i);const e=document.createElement('button');e.className='mini';e.textContent='✏';e.onclick=()=>editProd(i);const d=document.createElement('button');d.className='mini danger';d.textContent='🗑';d.onclick=()=>{askConfirm('ลบรุ่น '+p.name+'?',()=>{deleteProductRemote(p.name);state.products.splice(i,1);buildProdList();render();},'ยืนยันลบ');};row.appendChild(cbtn);row.appendChild(e);row.appendChild(d);el.appendChild(row);});}
 /* ===== รหัส SKU (1 SKU = 1 รหัส) · per-branch catalog ===== */
 function skuKey(m,c,s){return m+'|'+c+'|'+s;}
 function skuCodeOf(m,c,s){return (state.skuCodes||{})[skuKey(m,c,String(s))]||'';}
